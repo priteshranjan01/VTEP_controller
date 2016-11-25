@@ -23,13 +23,14 @@ class VtepConfiguratorException(Exception):
 
 
 class Switch(object):
-    def __init__(self, dpid, mapping=None, type=VXLAN_ENABLED):
+    def __init__(self, dpid, host_ip, mapping=None, type=VXLAN_ENABLED):
         self.dpid = dpid
         self.type = type  # Either VXLAN_GATEWAY or VXLAN_ENABLED
         self.mapping = mapping
+        self.host_ip = host_ip
 
     def __repr__(self):
-        return "Switch: type= {0} dpid= {1} mapping= {2}".format(self.type, self.dpid, self.mapping)
+        return "Switch: type= {0}, dpid= {1}, host_ip= {2}, mapping= {3}".format(self.type, self.dpid, self.host_ip, self.mapping)
 
 
 class VtepConfigurator(app_manager.RyuApp):
@@ -52,7 +53,7 @@ class VtepConfigurator(app_manager.RyuApp):
 
             dpid = int(dp['id'], 16)
             print (config_data)
-            self.switches[dpid] = Switch(dpid=dpid, type=type, mapping=new_mapping)
+            self.switches[dpid] = Switch(dpid=dpid, host_ip=dp['host_ip'], type=type, mapping=new_mapping)
 
 
     def __init__(self, *args, **kwargs):
@@ -60,6 +61,10 @@ class VtepConfigurator(app_manager.RyuApp):
         self.switches = {} # data-paths that are being controlled by this controller.
         self.ip_vni = {}  # Server IP address -> subscribed VNIs
         self._read_config(file_name="CONFIG.json")
+        # TODO: generate this mapping dynamically
+        self.vni_OFport = {101: [10, 11],
+                            102: [10, 11],
+                            103: [10, 11]}  # local OF ports which reach the vni
 
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -128,8 +133,22 @@ class VtepConfigurator(app_manager.RyuApp):
         eth = pkt.get_protocols(ethernet.ethernet)[0]
         src = eth.src
         dst = eth.dst
+        if in_port in self.vni_OFport[vni]:  # This was received from remote server
+            if dst == 'ff:ff:ff:ff:ff:ff':
+                dst_ports = self.vni_OFport[vni]
+                for dst_port in dst_ports:
+                    actions = [parser.OFPActionOutput(port=dst_port)]
+                    # Here again, we can't write a rule, hence outputting at all VXLAN-ports
+                    out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                              in_port=in_port, actions=actions, data=None)
+                    packet_out_status = datapath.send_msg(out)
+                    print ("Forwarded to local port : {0} operation was {1}".format(dst_port, packet_out_status))
 
-        if dst == 'ff:ff:ff:ff:ff:ff':  # TODO: find a constant in RYU that represents this
+            # Learn the mac of remote VM
+
+
+        # should this be elif?
+        elif dst == 'ff:ff:ff:ff:ff:ff':  # TODO: find a constant in RYU that represents this
             #pdb.set_trace()
             # Adds reverse flow rule for matching on IP address like this
             # table=1,tun_id=200,arp,nw_dst=14.0.0.4,actions=output:2
@@ -159,17 +178,29 @@ class VtepConfigurator(app_manager.RyuApp):
             ports = self.switches[datapath.id].mapping[vni][:]  # deep copy
             ports.remove(in_port)
             for local_out_port in ports:
-                match = parser.OFPMatch(tunnel_id=vni, eth_dst=dst)
+                #match = parser.OFPMatch(tunnel_id=vni, eth_dst=dst)
                 actions = [parser.OFPActionOutput(port=local_out_port)]
-                inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+                #inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
                 # Here we can't write OFPFlowMod because the match field will be same for each rule
                 # Hence the last one to execute shall overwrite the others.
                 # Hence we output the packets at each port.
                 out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                           in_port=in_port, actions=actions, data=None)
                 #mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)
-                flow_mod_status = datapath.send_msg(out)
-                print ("Forwarded to local port : {0} operation was {1}".format(local_out_port, flow_mod_status))
+                packet_out_status = datapath.send_msg(out)
+                print ("Forwarded to local port : {0} operation was {1}".format(local_out_port, packet_out_status))
+
+            # If it is a broadcast message then output to all VXLAN ports that are subscribed to this vni
+            of_ports = self.vni_OFport[vni]
+            for vxlan_port in of_ports:
+                actions = [parser.OFPActionOutput(port=vxlan_port)]
+                # Here again, we can't write a rule, hence outputting at all VXLAN-ports
+                out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                          in_port=in_port, actions=actions, data=None)
+                packet_out_status = datapath.send_msg(out)
+                print ("Forwarded to local port : {0} operation was {1}".format(vxlan_port, packet_out_status))
+
+
 
         """
         msg.match['tunnel_id']
