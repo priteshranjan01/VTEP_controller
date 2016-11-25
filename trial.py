@@ -62,9 +62,9 @@ class VtepConfigurator(app_manager.RyuApp):
         self.ip_vni = {}  # Server IP address -> subscribed VNIs
         self._read_config(file_name="CONFIG.json")
         # TODO: generate this mapping dynamically
-        self.vni_OFport = {101: [10, 11],
-                            102: [10, 11],
-                            103: [10, 11]}  # local OF ports which reach the vni
+        self.vni_OFport = {101: [10],
+                            102: [10],
+                            103: [10]}  # local OF ports which reach the vni
 
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
