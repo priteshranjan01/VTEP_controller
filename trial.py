@@ -105,7 +105,8 @@ class VtepConfigurator(app_manager.RyuApp):
             elif switch.type == VXLAN_GATEWAY:
                 for vni, vlan in switch.mapping.items():
                     # Add a rule to stip VLAN ID, Add a corresponding VNI and resubmit to 1
-                    match = parser.OFPMatch(vlan_vid=vlan)
+
+                    match = parser.OFPMatch(vlan_vid=(0x1000 | vlan[0]))  # vlan is a list with just one item
                     actions = [parser.OFPActionPopVlan(), parser.NXActionSetTunnel(tun_id=vni)]
                     inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions),
                                parser.OFPInstructionGotoTable(1)]
