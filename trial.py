@@ -104,10 +104,17 @@ class VtepConfigurator(app_manager.RyuApp):
 
             elif switch.type == VXLAN_GATEWAY:
                 for vni, vlan in switch.mapping.items():
-                    print (vni, vlan)
+                    # Add a rule to stip VLAN ID, Add a corresponding VNI and resubmit to 1
+                    match = parser.OFPMatch(vlan_vid=vlan)
+                    actions = [parser.OFPActionPopVlan(), parser.NXActionSetTunnel(tun_id=vni)]
+                    inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions),
+                               parser.OFPInstructionGotoTable(1)]
+                    mod = parser.OFPFlowMod(datapath=datapath, priority=100,
+                                            match=match, instructions=inst)
                     pdb.set_trace()
-                    match = parser.OFPMatch()
-                    # TODO : A lot
+                    VLAN_VNI_status = datapath.send_msg(mod)
+                    print ("VLAN {0} to VNI {1} mapping rule add operation {2}".format(vlan, vni, VLAN_VNI_status))
+                    pdb.set_trace()
 
             _add_default_resubmit_rule(next_table_id=1)  # All other packets should be submitted to 1
         else:
@@ -131,9 +138,15 @@ class VtepConfigurator(app_manager.RyuApp):
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocols(ethernet.ethernet)[0]
+
+        if eth.ethertype == ether_types.ETH_TYPE_LLDP:
+            # ignore lldp packet
+            return
+
         src = eth.src
         dst = eth.dst
         if in_port in self.vni_OFport[vni]:  # This was received from remote server
+            pdb.set_trace()
             if dst == 'ff:ff:ff:ff:ff:ff':
                 dst_ports = self.vni_OFport[vni]
                 for dst_port in dst_ports:
@@ -153,6 +166,11 @@ class VtepConfigurator(app_manager.RyuApp):
             # Adds reverse flow rule for matching on IP address like this
             # table=1,tun_id=200,arp,nw_dst=14.0.0.4,actions=output:2
             arp_pkt = pkt.get_protocol(arp.arp)
+            if arp_pkt is None:
+                print("This was a broadcast packet but not an arp packet")
+                print (pkt)
+                #pdb.set_trace()
+                return
             src_ip = arp_pkt.src_ip
             match = parser.OFPMatch(tunnel_id=vni, eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=src_ip)  # ETH_TYPE_IP ?
             actions = [parser.OFPActionOutput(port=in_port)]
