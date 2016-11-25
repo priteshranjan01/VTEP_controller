@@ -52,10 +52,8 @@ class VtepConfigurator(app_manager.RyuApp):
 
             dpid = int(dp['id'], 16)
             print (config_data)
-            #pdb.set_trace()
             self.switches[dpid] = Switch(dpid=dpid, type=type, mapping=new_mapping)
 
-        #pdb.set_trace()
 
     def __init__(self, *args, **kwargs):
         super(VtepConfigurator, self).__init__(*args, **kwargs)
@@ -114,6 +112,8 @@ class VtepConfigurator(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         #pdb.set_trace()
+        # TODO: It is a good idea to keep timeouts for flow-mods that are in PACKET_IN handler
+        # TODO: Add log messages instead of print statements
         msg = ev.msg
         datapath = msg.datapath
         if datapath.id not in self.switches:
@@ -126,34 +126,47 @@ class VtepConfigurator(app_manager.RyuApp):
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocols(ethernet.ethernet)[0]
-
         src = eth.src
+        dst = eth.dst
 
-        # TODO: shouldn't this be only for broadcast packets
-        # TODO: It is a good idea to keep timeouts for flow-mods that are in PACKET_IN handler
-        # Adds reverse flow rule like this
-        # table=1,tun_id=100,dl_dst=fa:16:3e:00:b6:71,actions=output:1
+        if dst == 'ff:ff:ff:ff:ff:ff':  # TODO: find a constant in RYU that represents this
+            #pdb.set_trace()
+            # Adds reverse flow rule for matching on IP address like this
+            # table=1,tun_id=200,arp,nw_dst=14.0.0.4,actions=output:2
+            arp_pkt = pkt.get_protocol(arp.arp)
+            src_ip = arp_pkt.src_ip
+            match = parser.OFPMatch(tunnel_id=vni, eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=src_ip)  # ETH_TYPE_IP ?
+            actions = [parser.OFPActionOutput(port=in_port)]
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]  # why not OFPIT_APPLY_ACTIONS?
+            mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match,
+                                    instructions=inst)  # command = OFPFC_MODIFY
 
-        match = parser.OFPMatch(tunnel_id=vni, eth_dst=src)
-        actions = [parser.OFPActionOutput(port=in_port)]
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)  # command = OFPFC_MODIFY
-        flow_mod_status = datapath.send_msg(mod)
-        print (flow_mod_status)
+            flow_mod_status = datapath.send_msg(mod)
+            print (mod)
+            print ("First flow mod ", flow_mod_status)
 
-        #pdb.set_trace()
-        # Adds reverse flow rule for matching on IP address like this
-        # table=1,tun_id=200,arp,nw_dst=14.0.0.4,actions=output:2
-        arp_pkt = pkt.get_protocol(arp.arp)
-        src_ip = arp_pkt.src_ip
-        match = parser.OFPMatch(tunnel_id=vni, eth_type=ether_types.ETH_TYPE_ARP, ipv4_dst=src_ip)
-        actions = [parser.OFPActionOutput(port=in_port)]
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_WRITE_ACTIONS, actions)]  # why not OFPIT_APPLY_ACTIONS?
-        mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match,
-                                instructions=inst)  # command = OFPFC_MODIFY
 
-        flow_mod_status = datapath.send_msg(mod)
-        print (flow_mod_status)
+            # Adds reverse flow rule like this
+            # table=1,tun_id=100,dl_dst=fa:16:3e:00:b6:71,actions=output:1
+            match = parser.OFPMatch(tunnel_id=vni, eth_dst=src)
+            actions = [parser.OFPActionOutput(port=in_port)]
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+            mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)  # command = OFPFC_MODIFY
+            flow_mod_status = datapath.send_msg(mod)
+            print ("Second flow mod", flow_mod_status)
+
+            # If it is a broadcast packet then forward on all the local ports that belong to this particular VNI
+            ports = self.switches[datapath.id].mapping[vni]
+            for local_out_port in ports:
+                match = parser.OFPMatch(tunnel_id=vni, eth_dst=dst)
+                actions = [parser.OFPActionOutput(port=local_out_port)]
+                inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+                mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)
+                flow_mod_status = datapath.send_msg(mod)
+                print ("Forwarded to local port : {0} operation was {1}".format(local_out_port, flow_mod_status))
+
+
+
 
         """
         msg.match['tunnel_id']
