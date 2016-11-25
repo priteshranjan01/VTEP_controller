@@ -8,7 +8,7 @@ from ryu.ofproto import ofproto_v1_4
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
-
+from ryu.lib.packet import arp
 import pdb
 import json
 from ryu.lib.ovs import bridge as ovs_bridge
@@ -113,10 +113,56 @@ class VtepConfigurator(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
+        #pdb.set_trace()
         msg = ev.msg
         datapath = msg.datapath
+        if datapath.id not in self.switches:
+            raise VtepConfiguratorException(datapath.id)
+
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
+        vni = msg.match['tunnel_id']
+        in_port = msg.match['in_port']
+
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocols(ethernet.ethernet)[0]
+
+        src = eth.src
+
+        # TODO: shouldn't this be only for broadcast packets
+        # TODO: It is a good idea to keep timeouts for flow-mods that are in PACKET_IN handler
+        # Adds reverse flow rule like this
+        # table=1,tun_id=100,dl_dst=fa:16:3e:00:b6:71,actions=output:1
+
+        match = parser.OFPMatch(tunnel_id=vni, eth_dst=src)
+        actions = [parser.OFPActionOutput(port=in_port)]
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)  # command = OFPFC_MODIFY
+        flow_mod_status = datapath.send_msg(mod)
+        print (flow_mod_status)
+
+        #pdb.set_trace()
+        # Adds reverse flow rule for matching on IP address like this
+        # table=1,tun_id=200,arp,nw_dst=14.0.0.4,actions=output:2
+        arp_pkt = pkt.get_protocol(arp.arp)
+        src_ip = arp_pkt.src_ip
+        match = parser.OFPMatch(tunnel_id=vni, eth_type=ether_types.ETH_TYPE_ARP, ipv4_dst=src_ip)
+        actions = [parser.OFPActionOutput(port=in_port)]
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_WRITE_ACTIONS, actions)]  # why not OFPIT_APPLY_ACTIONS?
+        mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match,
+                                instructions=inst)  # command = OFPFC_MODIFY
+
+        flow_mod_status = datapath.send_msg(mod)
+        print (flow_mod_status)
+
+        """
+        msg.match['tunnel_id']
+
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_WRITE_ACTIONS, actions)]
+        eth.ethertype == ether_types.ETH_TYPE_ARP  # If eth request
+        dst = eth.dst
+        src = eth.src
+        """
 
 
 
