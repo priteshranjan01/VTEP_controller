@@ -8,7 +8,7 @@
   [
     {
       "type": "VXLAN_ENABLED",
-      "id": "1",
+      "id": "000062fcf9ef4f43",
       "mapping": {
         "101": "1,4",
         "102": "2",
@@ -17,7 +17,7 @@
     },
     {
       "type": "VXLAN_ENABLED",
-      "id": "2",
+      "id": "0000da9b58237b4d",
       "mapping": {
         "101": "1,4",
         "102": "2",

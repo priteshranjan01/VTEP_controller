@@ -69,7 +69,7 @@ class VtepConfigurator(app_manager.RyuApp):
         def _add_default_resubmit_rule(next_table_id=1):
             match = parser.OFPMatch()
             inst = [parser.OFPInstructionGotoTable(next_table_id)]
-            mod = parser.OFPFlowMod(datapath=datapath, priority=800, match=match, instructions=inst)
+            mod = parser.OFPFlowMod(datapath=datapath, priority=0, match=match, instructions=inst)
             datapath.send_msg(mod)
 
         datapath = ev.msg.datapath
