@@ -50,7 +50,7 @@ class VtepConfigurator(app_manager.RyuApp):
             type = VXLAN_ENABLED if dp['type'] == 'VXLAN_ENABLED' else VXLAN_GATEWAY
             print (new_mapping)
 
-            dpid = hex(int(dp['id']))
+            dpid = int(dp['id'], 16)
             print (config_data)
             pdb.set_trace()
             self.switches[dpid] = Switch(dpid=dpid, type=type, mapping=new_mapping)
