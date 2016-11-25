@@ -52,10 +52,10 @@ class VtepConfigurator(app_manager.RyuApp):
 
             dpid = int(dp['id'], 16)
             print (config_data)
-            pdb.set_trace()
+            #pdb.set_trace()
             self.switches[dpid] = Switch(dpid=dpid, type=type, mapping=new_mapping)
 
-        pdb.set_trace()
+        #pdb.set_trace()
 
     def __init__(self, *args, **kwargs):
         super(VtepConfigurator, self).__init__(*args, **kwargs)
@@ -65,11 +65,18 @@ class VtepConfigurator(app_manager.RyuApp):
 
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
-    def connection_up_handler(self, ev):
+    def _connection_up_handler(self, ev):
         def _add_default_resubmit_rule(next_table_id=1):
+            #Adds a low priority rule in table 0 to resubmit the unmatched packets to table 1
             match = parser.OFPMatch()
             inst = [parser.OFPInstructionGotoTable(next_table_id)]
             mod = parser.OFPFlowMod(datapath=datapath, priority=0, match=match, instructions=inst)
+            datapath.send_msg(mod)
+
+            #Add a low priority rule in table 1 to forward table-miss to controller
+            actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+            inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+            mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=0, match=match, instructions=inst)
             datapath.send_msg(mod)
 
         datapath = ev.msg.datapath
@@ -95,12 +102,21 @@ class VtepConfigurator(app_manager.RyuApp):
             elif switch.type == VXLAN_GATEWAY:
                 for vni, vlan in switch.mapping.items():
                     print (vni, vlan)
+                    pdb.set_trace()
+                    match = parser.OFPMatch()
                     # TODO : A lot
 
             _add_default_resubmit_rule(next_table_id=1)  # All other packets should be submitted to 1
         else:
             pdb.set_trace()
             raise VtepConfiguratorException(dpid)
+
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def _packet_in_handler(self, ev):
+        msg = ev.msg
+        datapath = msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
 
 
 
