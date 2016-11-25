@@ -157,12 +157,18 @@ class VtepConfigurator(app_manager.RyuApp):
 
             # If it is a broadcast packet then forward on all the local ports that belong to this particular VNI
             ports = self.switches[datapath.id].mapping[vni]
+            ports.remove(in_port)
             for local_out_port in ports:
                 match = parser.OFPMatch(tunnel_id=vni, eth_dst=dst)
                 actions = [parser.OFPActionOutput(port=local_out_port)]
                 inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-                mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)
-                flow_mod_status = datapath.send_msg(mod)
+                # Here we can't write OFPFlowMod because the match field will be same for each rule
+                # Hence the last one to execute shall overwrite the others.
+                # Hence we output the packets at each port.
+                out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
+                                          in_port=in_port, actions=actions, data=None)
+                #mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)
+                flow_mod_status = datapath.send_msg(out)
                 print ("Forwarded to local port : {0} operation was {1}".format(local_out_port, flow_mod_status))
 
 
