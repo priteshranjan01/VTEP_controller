@@ -29,7 +29,7 @@ class Switch(object):
         self.mapping = mapping
 
     def __repr__(self):
-        return "{0} {1} {2}".format(self.__class__, self.type, self.dpid, self.mapping)
+        return "Switch: type= {0} dpid= {1} mapping= {2}".format(self.type, self.dpid, self.mapping)
 
 
 class VtepConfigurator(app_manager.RyuApp):
@@ -40,15 +40,20 @@ class VtepConfigurator(app_manager.RyuApp):
             config_data = json.load(config)
 
         for server_ip, vnis in config_data['IP_VNI'].items():
-            self.ip_vni[server_ip] = vnis.split(',')
+            self.ip_vni[server_ip] = map(int, vnis.split(','))
 
         for dp in config_data['switches']:
-            for vni in dp['mapping']:
-                dp['mapping'][int(vni)] = map(int, dp['mapping'][vni].split(','))
+            new_mapping = {}
+            for vni, values in dp['mapping'].items():
+                new_mapping[int(vni)]  = map(int, dp['mapping'][vni].split(','))
+
             type = VXLAN_ENABLED if dp['type'] == 'VXLAN_ENABLED' else VXLAN_GATEWAY
+            print (new_mapping)
+
+            dpid = hex(int(dp['id']))
             print (config_data)
-            self.switches[dp['id']] = Switch(dpid=dp['id'], type=type,
-                                             mapping=dp['mapping'])
+            pdb.set_trace()
+            self.switches[dpid] = Switch(dpid=dpid, type=type, mapping=new_mapping)
 
         pdb.set_trace()
 
