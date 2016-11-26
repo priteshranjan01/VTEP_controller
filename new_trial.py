@@ -78,14 +78,14 @@ class VtepConfigurator(app_manager.RyuApp):
             inst = [parser.OFPInstructionGotoTable(next_table_id)]
             mod = parser.OFPFlowMod(datapath=datapath, priority=0, match=match, instructions=inst)
             st = datapath.send_msg(mod)
-            print("Rule added {0}, table={3} priority={1} resubmit={2}".format(st, 0, next_table_id, 0))
+            print("{4} Rule added {0}, table={3} priority={1} resubmit={2}".format(st, 0, next_table_id, 0, dpid))
 
             # Add a low priority rule in table 1 to forward table-miss to controller
             actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
             inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
             mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=0, match=match, instructions=inst)
             st = datapath.send_msg(mod)
-            print("Rule added {0}, table={2} priority={1} Forward to COTROLLER".format(st, 0, next_table_id))
+            print("{3} Rule added {0}, table={2} priority={1} Forward to COTROLLER".format(st, 0, next_table_id, dpid))
 
         datapath = ev.msg.datapath
         dpid = datapath.id
@@ -110,7 +110,7 @@ class VtepConfigurator(app_manager.RyuApp):
                     mod = parser.OFPFlowMod(datapath=datapath, priority=100,
                                             match=match, instructions=inst)
                     st = datapath.send_msg(mod)
-                    print ("Rule added {0}: match(in_port={1}) set_tun_id={2}, resubmit({3}".format(st, port, vni, 1))
+                    print ("{4} Rule added {0}: match(in_port={1}) set_tun_id={2}, resubmit({3}".format(st, port, vni, 1, dpid))
 
         elif switch.type == VXLAN_GATEWAY:
             for vni, vlan in switch.mapping.items():
@@ -122,15 +122,16 @@ class VtepConfigurator(app_manager.RyuApp):
                 mod = parser.OFPFlowMod(datapath=datapath, priority=100,
                                         match=match, instructions=inst)
                 st = datapath.send_msg(mod)
-                print("Rule Added {0}: match(vlan={1}) pop_vlan, set_tun_id={2} resubmit={3}".format(st, vlan[0], vni, 1))
+                print("{4} Rule Added {0}: match(vlan={1}) pop_vlan, set_tun_id={2} resubmit={3}".format(st, vlan[0], vni, 1, dpid))
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
         # TODO: Keep timeouts for flow-mods that are in PACKET_IN handler
         msg = ev.msg
         datapath = msg.datapath
-        if datapath.id not in self.switches:
-            raise VtepConfiguratorException(datapath.id)
+        dpid = datapath.id
+        if dpid not in self.switches:
+            raise VtepConfiguratorException(dpid)
 
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
@@ -140,12 +141,9 @@ class VtepConfigurator(app_manager.RyuApp):
         if eth.ethertype == ether_types.ETH_TYPE_LLDP: return  # ignore lldp packet
 
         in_port = msg.match['in_port']
-        try:
-            vni = msg.match['tunnel_id']
-        except KeyError as e:
-            print(e)
-            pdb.set_trace()
-            return
+        vni = msg.match['tunnel_id']
+
+        print ("packet", pkt)
 
         # Learn the source's (MAC address, VNI) and Port mapping
         match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.src)
@@ -154,8 +152,8 @@ class VtepConfigurator(app_manager.RyuApp):
         mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match,
                                 instructions=inst)
         st = datapath.send_msg(mod)
-        print ("Rule added {0} table=1, priority=100, match(tunnel_id={1}, eth_dst={2}, out_port={3}".format(
-            st, vni, eth.src, in_port))
+        print ("{4} Rule added {0} table=1, priority=100, match(tunnel_id={1}, eth_dst={2}, out_port={3}".format(
+            st, vni, eth.src, in_port, dpid))
 
         if eth.dst == L2_BROADCAST:
             # Output the packet at each of the local ports on server of this VNI and
@@ -174,14 +172,14 @@ class VtepConfigurator(app_manager.RyuApp):
             inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
             mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)
             st = datapath.send_msg(mod)
-            print ("Rule added {0} table=1, priority=100, match(tunnel_id={1}, eth_type={2}, ipv4_dst={3} action={4}".format(
-                st, vni, ether_types.ETH_TYPE_IP, src_ip, in_port))
+            print ("{5} Rule added {0} table=1, priority=100, match(tunnel_id={1}, eth_type={2}, ipv4_dst={3} output={4}".format(
+                st, vni, ether_types.ETH_TYPE_IP, src_ip, in_port, dpid))
 
-            switch = self.switches[datapath.id]
+            switch = self.switches[dpid]
             vxlan_ports = switch.vni_OFport[vni][:]
             local_ports = switch.mapping[vni][:]
             if in_port in vxlan_ports:
-                pdb.set_trace()
+                #pdb.set_trace()
                 output_ports = local_ports  # Multi-cast on all local ports
             else:
                 local_ports.remove(in_port)
@@ -192,4 +190,4 @@ class VtepConfigurator(app_manager.RyuApp):
                 actions = [parser.OFPActionOutput(port=port)]
                 out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port, actions=actions, data=pkt)
                 st = datapath.send_msg(out)
-                print ("Packet output {0} port={1}".format(st, port))
+                print ("{2} Packet output {0} port={1}".format(st, port, dpid))
