@@ -9,6 +9,7 @@ from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
 from ryu.lib.packet import arp
+from ryu.lib.packet import ipv4
 import pdb
 import json
 from ryu.lib.ovs import bridge as ovs_bridge
@@ -28,6 +29,9 @@ class Switch(object):
         self.type = type  # Either VXLAN_GATEWAY or VXLAN_ENABLED
         self.mapping = mapping
         self.host_ip = host_ip
+        self.vni_OFport = {101: [10],
+                           102: [10],
+                           103: [10]}  # local OF ports which reach the vni
 
     def __repr__(self):
         return "Switch: type= {0}, dpid= {1}, host_ip= {2}, mapping= {3}".format(self.type, self.dpid, self.host_ip, self.mapping)
@@ -62,9 +66,6 @@ class VtepConfigurator(app_manager.RyuApp):
         self.ip_vni = {}  # Server IP address -> subscribed VNIs
         self._read_config(file_name="CONFIG.json")
         # TODO: generate this mapping dynamically
-        self.vni_OFport = {101: [10],
-                            102: [10],
-                            103: [10]}  # local OF ports which reach the vni
 
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -112,10 +113,10 @@ class VtepConfigurator(app_manager.RyuApp):
                                parser.OFPInstructionGotoTable(1)]
                     mod = parser.OFPFlowMod(datapath=datapath, priority=100,
                                             match=match, instructions=inst)
-                    pdb.set_trace()
+                    #pdb.set_trace()
                     VLAN_VNI_status = datapath.send_msg(mod)
                     print ("VLAN {0} to VNI {1} mapping rule add operation {2}".format(vlan, vni, VLAN_VNI_status))
-                    pdb.set_trace()
+                    #pdb.set_trace()
 
             _add_default_resubmit_rule(next_table_id=1)  # All other packets should be submitted to 1
         else:
@@ -134,8 +135,12 @@ class VtepConfigurator(app_manager.RyuApp):
 
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-        vni = msg.match['tunnel_id']
-        in_port = msg.match['in_port']
+        try:
+            vni = msg.match['tunnel_id']
+            in_port = msg.match['in_port']
+        except KeyError as e:
+            print e
+            pdb.set_trace()
 
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocols(ethernet.ethernet)[0]
@@ -146,21 +151,48 @@ class VtepConfigurator(app_manager.RyuApp):
 
         src = eth.src
         dst = eth.dst
-        if in_port in self.vni_OFport[vni]:  # This was received from remote server
+        if in_port in set(self.switches[datapath.id].vni_OFport.values()):  # This was received from remote server
             pdb.set_trace()
+
+
             if dst == 'ff:ff:ff:ff:ff:ff':
-                dst_ports = self.vni_OFport[vni]
+                # Received from tunnel port. Learn the SRC vm's MAC address
+                match = parser.OFPMatch(tunnel_id=vni, eth_dst=src)
+                actions = [parser.OFPActionOutput(port=in_port)]
+                inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+                mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match,
+                                        instructions=inst)  # command = OFPFC_MODIFY
+                flow_mod_status = datapath.send_msg(mod)
+                print ("Reverse flow for remote VM on MAC matching installed ", flow_mod_status)
+
+                arp_pkt = pkt.get_protocol(arp.arp)
+                if arp_pkt is None:
+                    print("This was a broadcast packet but not an arp packet")
+                    # Ingnore packets like DHCP
+                    # print (pkt)
+                    # pdb.set_trace()
+                    return
+                src_ip = arp_pkt.src_ip
+                match = parser.OFPMatch(tunnel_id=vni, eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=src_ip)  # ETH_TYPE_IP ?
+                actions = [parser.OFPActionOutput(port=in_port)]
+                inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]  # why not OFPIT_APPLY_ACTIONS?
+                mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)  # command = OFPFC_MODIFY
+
+                flow_mod_status = datapath.send_msg(mod)
+                # print (mod)
+                print ("Reverse flow for remote VM on IP matching installed ", flow_mod_status)
+
+                dst_ports = self.self.switches[datapath.id].vni_OFport[vni]
                 for dst_port in dst_ports:
                     actions = [parser.OFPActionOutput(port=dst_port)]
                     # Here again, we can't write a rule, hence outputting at all VXLAN-ports
                     out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
                                               in_port=in_port, actions=actions, data=None)
                     packet_out_status = datapath.send_msg(out)
-                    print ("Forwarded to local port : {0} operation was {1}".format(dst_port, packet_out_status))
-
-            # Learn the mac of remote VM
+                    print ("Forwarded to local port on remote server: {0} operation was {1}".format(dst_port, packet_out_status))
 
 
+                    # Learn the mac of remote VM
         # should this be elif?
         elif dst == 'ff:ff:ff:ff:ff:ff':  # TODO: find a constant in RYU that represents this
             #pdb.set_trace()
@@ -169,7 +201,8 @@ class VtepConfigurator(app_manager.RyuApp):
             arp_pkt = pkt.get_protocol(arp.arp)
             if arp_pkt is None:
                 print("This was a broadcast packet but not an arp packet")
-                print (pkt)
+                # Ingnore packets like DHCP
+                #print (pkt)
                 #pdb.set_trace()
                 return
             src_ip = arp_pkt.src_ip
@@ -180,7 +213,7 @@ class VtepConfigurator(app_manager.RyuApp):
                                     instructions=inst)  # command = OFPFC_MODIFY
 
             flow_mod_status = datapath.send_msg(mod)
-            print (mod)
+            #print (mod)
             print ("First flow mod ", flow_mod_status)
 
 
@@ -196,6 +229,8 @@ class VtepConfigurator(app_manager.RyuApp):
             # If it is a broadcast packet then forward on all the local ports that belong to this particular VNI
             ports = self.switches[datapath.id].mapping[vni][:]  # deep copy
             ports.remove(in_port)
+            data = None
+
             for local_out_port in ports:
                 #match = parser.OFPMatch(tunnel_id=vni, eth_dst=dst)
                 actions = [parser.OFPActionOutput(port=local_out_port)]
@@ -203,8 +238,9 @@ class VtepConfigurator(app_manager.RyuApp):
                 # Here we can't write OFPFlowMod because the match field will be same for each rule
                 # Hence the last one to execute shall overwrite the others.
                 # Hence we output the packets at each port.
-                out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
-                                          in_port=in_port, actions=actions, data=None)
+
+                out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER,
+                                          in_port=in_port, actions=actions, data=pkt)
                 #mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)
                 packet_out_status = datapath.send_msg(out)
                 print ("Forwarded to local port : {0} operation was {1}".format(local_out_port, packet_out_status))
@@ -214,10 +250,10 @@ class VtepConfigurator(app_manager.RyuApp):
             for vxlan_port in of_ports:
                 actions = [parser.OFPActionOutput(port=vxlan_port)]
                 # Here again, we can't write a rule, hence outputting at all VXLAN-ports
-                out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
-                                          in_port=in_port, actions=actions, data=None)
+                out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER,
+                                          in_port=in_port, actions=actions, data=pkt)
                 packet_out_status = datapath.send_msg(out)
-                print ("Forwarded to local port : {0} operation was {1}".format(vxlan_port, packet_out_status))
+                print ("Forwarded to VXLAN port : {0} operation was {1}".format(vxlan_port, packet_out_status))
 
 
 
