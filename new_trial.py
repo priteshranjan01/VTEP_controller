@@ -151,8 +151,12 @@ class VtepConfigurator(app_manager.RyuApp):
         if eth.ethertype == ether_types.ETH_TYPE_LLDP: return  # ignore LLDP packet
 
         in_port = msg.match['in_port']
-        vni = msg.match['tunnel_id']
-
+        try:
+            vni = msg.match['tunnel_id']
+        except KeyError as e:
+            print e
+            pdb.set_trace()
+        print (in_port, vni)
         print ("packet", pkt)
 
         if switch.type == VXLAN_ENABLED:
@@ -168,12 +172,11 @@ class VtepConfigurator(app_manager.RyuApp):
                 print ("{4} Rule added {0} table=1, priority=100, match(tunnel_id={1}, eth_dst={2}, out_port={3}".format(
                     st, vni, eth.src, in_port, dpid))
 
-                # Learn the source's (IP address, VNI) and port mapping
                 arp_pkt = pkt.get_protocol(arp.arp)  # TODO: There has to be a better way
                 if arp_pkt is None:
                     print ("A broadcast packet but not an ARP packet")
                     return
-
+                # Learn the source's (IP address, VNI) and port mapping
                 # This learning can be done from unicast packets also.
                 src_ip = arp_pkt.src_ip
                 match = parser.OFPMatch(tunnel_id=vni, eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=src_ip)
@@ -226,31 +229,43 @@ class VtepConfigurator(app_manager.RyuApp):
 
         elif switch.type == VXLAN_GATEWAY:
             if eth.dst == L2_BROADCAST:
-                # Add reverse rule for uni-cast packet.
-                match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.src)
-                self.mac_vni_to_hostip[(eth.src, vni)] = switch.host_ip
-                vlan_id = switch.mapping[vni]
-                actions = [OFPActionPushVlan(ether_types.ETH_TYPE_8021Q), OFPActionSetField(vlan_vid=vlan_id),
-                           parser.OFPActionOutput(port=in_port)]
-
-                inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-                mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match,
-                                        instructions=inst)
-                st = datapath.send_msg(mod)
-                print ("{4} Rule added {0} table=1, priority=100, match(tunnel_id={1}, eth_dst={2}, set_vlan={5}, out_port={3}".format(
-                    st, vni, eth.src, in_port, dpid, vlan_id))
-
                 vxlan_ports = switch.vni_OFport[vni][:]
-                if in_port in vxlan_ports:  # Incoming traffic
-                    # Add a VLAN tag and flood.
-                    actions = [OFPActionPushVlan(ether_types.ETH_TYPE_8021Q), OFPActionSetField(vlan_vid=vlan_id),
+                if in_port in vxlan_ports: # Incoming traffic
+                    # Add reverse rule for uni-cast packet.
+                    match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.src)
+                    self.mac_vni_to_hostip[(eth.src, vni)] = switch.host_ip
+                    actions = [parser.OFPActionOutput(port=in_port)]
+                    inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+                    mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match,
+                                            instructions=inst)
+                    st = datapath.send_msg(mod)
+                    print ("{4} Rule added {0} table=1, priority=100, match(tunnel_id={1}, eth_dst={2}, out_port={3}".format(
+                        st, vni, eth.src, in_port, dpid, ))
+
+                    # Set tunnel ID and Flood.
+                    vlan_id = switch.mapping[vni][0]
+                    actions = [OFPActionPushVlan(ether_types.ETH_TYPE_8021Q),
+                               OFPActionSetField(vlan_vid=(0x1000 | vlan_id)),
                                parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
                     out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
                                               actions=actions, data=pkt)
                     st = datapath.send_msg(out)
-                    print("{2} Incoming traffic output {0} port={1} PKT=\n{3}".format(st, ofproto.OFPP_FLOOD, dpid, pkt))
+                    print("{0} Incoming traffic output {1} port=OFPP_FLOOD PKT=\n{2}".format(dpid, st, pkt))
+
                 else:  # Outgoing traffic
-                    # output on all VXLAN ports.
+                    # Add a reverse rule that sets VLAN ID and forwards to the local port.
+                    vlan_id = switch.mapping[vni][0]
+                    match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.src)
+                    actions = [OFPActionPushVlan(ether_types.ETH_TYPE_8021Q), OFPActionSetField(vlan_vid=(0x1000 | vlan_id)),
+                               parser.OFPActionOutput(port=in_port)]
+                    inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+                    mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match,
+                                            instructions=inst)
+                    st = datapath.send_msg(mod)
+                    print ("{0} Reverse rule added {1}, match(vni={0}, eth_dst={2}) actions(setVLANID={3}, output={4}".format(
+                        dpid, st, vni, vlan_id, in_port))
+
+                    # multicast on all VXLAN ports
                     for port in vxlan_ports:
                         actions = [parser.OFPActionOutput(port=port)]
                         out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
@@ -258,25 +273,60 @@ class VtepConfigurator(app_manager.RyuApp):
                         st = datapath.send_msg(out)
                         print ("{2} Outgoing traffic output {0} port={1} PKT=\n{3}".format(st, port, dpid, pkt))
 
-            ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
-            if ipv4_pkt is not None:
-                try:
-                    remote_ip = self.mac_vni_to_hostip[(eth.dst, vni)]
-                except KeyError:
-                    print ("ping from other side")  # You can do better
-                    return
-
-                out_ofport = switch.vni_remoteip_to_ofport[(vni, remote_ip)]
-                match = parser.OFPMatch(tunnel_id=vni, eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=ipv4_pkt.dst)
-                actions = [parser.OFPActionOutput(port=out_ofport)]
-                inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-                mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)
-                st = datapath.send_msg(mod)
-                print("{0} Rule added {1} table=1, priority=100, match(tunnel_id={2}, IP, ipv4_dst={3}), Output={4}".format(
-                    dpid, st, vni, ipv4_pkt.dst, out_ofport))
-                out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
-                                          actions=actions, data=pkt)
-                st = datapath.send_msg(out)
-                print ("{0} packet out {1} port={2} PKT=\n{3}".format(dpid, dpid, st, out_ofport, pkt))
 
 
+
+
+
+
+
+
+
+
+
+            #
+            #
+            #
+            #
+            #
+            #     vxlan_ports = switch.vni_OFport[vni][:]
+            #     if in_port in vxlan_ports:  # Incoming traffic
+            #         # Add a VLAN tag and flood.
+            #         vlan_id = switch.mapping[vni][0]
+            #         actions = [OFPActionPushVlan(ether_types.ETH_TYPE_8021Q), OFPActionSetField(vlan_vid=(0x1000 | vlan_id)),
+            #                    parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+            #         out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
+            #                                   actions=actions, data=pkt)
+            #         st = datapath.send_msg(out)
+            #         print("{0} Incoming traffic output {1} port=OFPP_FLOOD PKT=\n{2}".format(dpid, st, pkt))
+            #     else:  # Outgoing traffic
+            #         # output on all VXLAN ports.
+            #         for port in vxlan_ports:
+            #             actions = [parser.OFPActionOutput(port=port)]
+            #             out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
+            #                                       actions=actions, data=pkt)
+            #             st = datapath.send_msg(out)
+            #             print ("{2} Outgoing traffic output {0} port={1} PKT=\n{3}".format(st, port, dpid, pkt))
+            #
+            # ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
+            # if ipv4_pkt is not None:
+            #     try:
+            #         remote_ip = self.mac_vni_to_hostip[(eth.dst, vni)]
+            #     except KeyError:
+            #         print ("ping from other side")  # You can do better
+            #         return
+            #
+            #     out_ofport = switch.vni_remoteip_to_ofport[(vni, remote_ip)]
+            #     match = parser.OFPMatch(tunnel_id=vni, eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=ipv4_pkt.dst)
+            #     actions = [parser.OFPActionOutput(port=out_ofport)]
+            #     inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+            #     mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)
+            #     st = datapath.send_msg(mod)
+            #     print("{0} Rule added {1} table=1, priority=100, match(tunnel_id={2}, IP, ipv4_dst={3}), Output={4}".format(
+            #         dpid, st, vni, ipv4_pkt.dst, out_ofport))
+            #     out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
+            #                               actions=actions, data=pkt)
+            #     st = datapath.send_msg(out)
+            #     print ("{0} packet out {1} port={2} PKT=\n{3}".format(dpid, dpid, st, out_ofport, pkt))
+            #
+            #
