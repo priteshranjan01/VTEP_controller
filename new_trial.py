@@ -174,21 +174,22 @@ class VtepConfigurator(app_manager.RyuApp):
             inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
             mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)
             st = datapath.send_msg(mod)
-            print ("Rule added {0} table=1, priority=100, match(tunnel_id={1}, eth_type={2}, ipv4_dst={3}".format(
-                st, vni, ether_types.ETH_TYPE_IP, src_ip))
+            print ("Rule added {0} table=1, priority=100, match(tunnel_id={1}, eth_type={2}, ipv4_dst={3} action={4}".format(
+                st, vni, ether_types.ETH_TYPE_IP, src_ip, in_port))
 
             switch = self.switches[datapath.id]
             vxlan_ports = switch.vni_OFport[vni][:]
             local_ports = switch.mapping[vni][:]
             if in_port in vxlan_ports:
+                pdb.set_trace()
                 output_ports = local_ports  # Multi-cast on all local ports
             else:
-                output_ports = vxlan_ports + local_ports.remove(in_port)
+                local_ports.remove(in_port)
+                output_ports = vxlan_ports + local_ports
                 # Multi-cast on all subscriber VXLAN_ports and local ports except the in_port
             print("output_ports = {0}".format(output_ports))
             for port in output_ports:
                 actions = [parser.OFPActionOutput(port=port)]
-                out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER,
-                                          in_port=in_port, actions=actions, data=msg.data)
+                out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port, actions=actions, data=pkt)
                 st = datapath.send_msg(out)
                 print ("Packet output {0} port={1}".format(st, port))
