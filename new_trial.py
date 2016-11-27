@@ -191,19 +191,23 @@ class VtepConfigurator(app_manager.RyuApp):
                 # to the VXLAN tunnel ports subscribed for this VNI
                 vxlan_ports = switch.vni_OFport[vni][:]
                 local_ports = switch.mapping[vni][:]
-                if in_port in vxlan_ports:
-                    #pdb.set_trace()
-                    output_ports = local_ports  # Multi-cast on all local ports
-                else:
-                    local_ports.remove(in_port)
-                    output_ports = vxlan_ports + local_ports
+                if in_port in vxlan_ports:  # Incoming traffic
+                    for port in local_ports:  # Multi-cast on all local ports
+                        actions = [parser.OFPActionOutput(port=port)]
+                        out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
+                                                  actions=actions, data=pkt)
+                        st = datapath.send_msg(out)
+                        print ("{2} Packet output {0} port={1} PKT=\n{3}".format(st, port, dpid, 1))
+                else:  # Outgoing traffic
                     # Multi-cast on all subscriber VXLAN_ports and local ports except the in_port
-                print("output_ports = {0}".format(output_ports))
-                for port in output_ports:
-                    actions = [parser.OFPActionOutput(port=port)]
-                    out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port, actions=actions, data=pkt)
-                    st = datapath.send_msg(out)
-                    print ("{2} Packet output {0} port={1} PKT=\n{3}".format(st, port, dpid, pkt))
+                    # print("output_ports = {0}".format(output_ports))
+                    for port in vxlan_ports:
+                        # Set tunnel ID and output on the ports
+                        actions = [parser.NXActionSetTunnel(tun_id=vni), parser.OFPActionOutput(port=port)]
+                        out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
+                                                  actions=actions, data=pkt)
+                        st = datapath.send_msg(out)
+                        print ("{0} Packet output {1} in_port={2} setTunnelId={3} out_port={4}".format(dpid, st, in_port, vni, port))
 
             ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
             if ipv4_pkt is not None:
@@ -217,7 +221,7 @@ class VtepConfigurator(app_manager.RyuApp):
                 print(eth.dst)
                 #pdb.set_trace()
                 match = parser.OFPMatch(tunnel_id=vni, eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=ipv4_pkt.dst)
-                actions = [parser.OFPActionOutput(port=out_ofport)]
+                actions = [parser.OFPActionOutput(port=out_ofport)]  # Add an action to set VNI field.
                 inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
                 mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=100, match=match, instructions=inst)
                 st = datapath.send_msg(mod)
@@ -225,7 +229,7 @@ class VtepConfigurator(app_manager.RyuApp):
                     st, vni, ipv4_pkt.dst, out_ofport, dpid))
                 out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port, actions=actions, data=pkt)
                 st = datapath.send_msg(out)
-                print ("{2} Packet output {0} port={1} PKT=\n{3}".format(st, out_ofport, dpid, pkt))
+                print ("{2} Packet output {0} port={1} PKT=\n{3}".format(st, out_ofport, dpid, 1))
 
         elif switch.type == VXLAN_GATEWAY:
             if eth.dst == L2_BROADCAST:
@@ -250,7 +254,7 @@ class VtepConfigurator(app_manager.RyuApp):
                     out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
                                               actions=actions, data=pkt)
                     st = datapath.send_msg(out)
-                    print("{0} Incoming traffic output {1} port=OFPP_FLOOD PKT=\n{2}".format(dpid, st, pkt))
+                    print("{0} Incoming traffic output {1} port=OFPP_FLOOD PKT=\n{2}".format(dpid, st, 1))
 
                 else:  # Outgoing traffic
                     # Add a reverse rule that sets VLAN ID and forwards to the local port.
@@ -267,8 +271,8 @@ class VtepConfigurator(app_manager.RyuApp):
 
                     # multicast on all VXLAN ports
                     for port in vxlan_ports:
-                        actions = [parser.OFPActionOutput(port=port)]
+                        actions = [parser.NXActionSetTunnel(tun_id=vni), parser.OFPActionOutput(port=port)]
                         out = parser.OFPPacketOut(datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER, in_port=in_port,
                                                   actions=actions, data=pkt)
                         st = datapath.send_msg(out)
-                        print ("{2} Outgoing traffic output {0} port={1} PKT=\n{3}".format(st, port, dpid, pkt))
+                        print ("{0} Outgoing traffic output {1} setTunnelId={2} out_port={3} PKT=\n{4}".format(dpid, st, vni, port, 1))
