@@ -83,14 +83,16 @@ class VtepConfigurator(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def _connection_up_handler(self, ev):
         def _add_default_resubmit_rule(next_table_id=1):
-            # Adds a low priority rule in table 0 to resubmit the unmatched packets to table 1
+            # Adds a low priority rule in table 0 to resubmit the unmatched packets
+            # (i.e. the packets which didn't come from local port) to table 1
             match = parser.OFPMatch()
             inst = [parser.OFPInstructionGotoTable(next_table_id)]
             mod = parser.OFPFlowMod(datapath=datapath, priority=0, match=match, instructions=inst)
             st = datapath.send_msg(mod)
             print("{4} Rule added {0}, table={3} priority={1} resubmit={2}".format(st, 0, next_table_id, 0, dpid))
 
-            # Add a low priority rule in table 1 to forward table-miss to controller
+            # Add a low priority rule in table 1 to forward table-miss to controller.
+            # These will cause a Packet_IN at controller
             actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
             inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
             mod = parser.OFPFlowMod(datapath=datapath, table_id=1, priority=0, match=match, instructions=inst)
@@ -106,13 +108,17 @@ class VtepConfigurator(app_manager.RyuApp):
 
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-        _add_default_resubmit_rule(next_table_id=1)  # All other packets should be submitted to 1
+        # Forward all other packets to table 1 in packet processing pipeline.
+        _add_default_resubmit_rule(next_table_id=1)
 
+        # Switch will conatin all the information from CONFIG about this particular datapath
         switch = self.switches[dpid]
         if switch.type == VXLAN_ENABLED:
-            for vni, ports in switch.mapping.items():
+            for vni, ports in switch.mapping.items():  # (e.g. vni=101 and ports= [1,4])
                 for port in ports:
                     # table=0, in_port=<1>,actions=set_field:<100>->tun_id,resubmit(,1)
+                    # These rules will ensure that all the packets coming from local ports
+                    # have tunnel_id associated with them, when packet processing reaches table 1.
                     match = parser.OFPMatch(in_port=port)
                     actions = [parser.NXActionSetTunnel(tun_id=vni)]
                     inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions),
@@ -125,6 +131,8 @@ class VtepConfigurator(app_manager.RyuApp):
         elif switch.type == VXLAN_GATEWAY:
             for vni, vlan in switch.mapping.items():
                 # Add a rule to stip VLAN ID, Add a corresponding VNI and resubmit to 1
+                # These rules will ensure that all the packets coming from local ports
+                # have VLAN tag stripped off and corresponding tun_id assiciated
                 match = parser.OFPMatch(vlan_vid=(0x1000 | vlan[0]))  # vlan is a list with just one item
                 actions = [parser.OFPActionPopVlan(), parser.NXActionSetTunnel(tun_id=vni)]
                 inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions),
@@ -152,7 +160,7 @@ class VtepConfigurator(app_manager.RyuApp):
 
         in_port = msg.match['in_port']
         try:
-            vni = msg.match['tunnel_id']
+            vni = msg.match['tunnel_id']  # now these try-except should be unnecessary.
         except KeyError as e:
             print e
             pdb.set_trace()
@@ -162,6 +170,7 @@ class VtepConfigurator(app_manager.RyuApp):
         if switch.type == VXLAN_ENABLED:
             if eth.dst == L2_BROADCAST:
                 # Learn the source's (MAC address, VNI) and Port mapping
+                # Will be used while sending a reply.
                 match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.src)
                 self.mac_vni_to_hostip[(eth.src, vni)] = switch.host_ip
                 actions = [parser.OFPActionOutput(port=in_port)]
@@ -172,6 +181,8 @@ class VtepConfigurator(app_manager.RyuApp):
                 print ("{4} Rule added {0} table=1, priority=100, match(tunnel_id={1}, eth_dst={2}, out_port={3}".format(
                     st, vni, eth.src, in_port, dpid))
 
+                # this L3 matching rule has not hit, during ICMP. should not be required.
+                # Reverse rule based on IP matching.
                 arp_pkt = pkt.get_protocol(arp.arp)  # TODO: There has to be a better way
                 if arp_pkt is None:
                     print ("A broadcast packet but not an ARP packet")
@@ -187,8 +198,8 @@ class VtepConfigurator(app_manager.RyuApp):
                 print ("{5} Rule added {0} table=1, priority=100, match(tunnel_id={1}, eth_type={2}, ipv4_dst={3} output={4}".format(
                     st, vni, ether_types.ETH_TYPE_IP, src_ip, in_port, dpid))
 
-                # Output the packet at each of the local ports on server of this VNI and
-                # to the VXLAN tunnel ports subscribed for this VNI
+                # If a broadcast packet has been received from a VXLAN tunnel port then
+                # multicast it on local ports.
                 vxlan_ports = switch.vni_OFport[vni][:]
                 local_ports = switch.mapping[vni][:]
                 if in_port in vxlan_ports:  # Incoming traffic
@@ -198,8 +209,10 @@ class VtepConfigurator(app_manager.RyuApp):
                                                   actions=actions, data=pkt)
                         st = datapath.send_msg(out)
                         print ("{2} Packet output {0} port={1} PKT=\n{3}".format(st, port, dpid, 1))
+                # Else, it has been received from local ports.
+                # Output the packet at each of the he VXLAN tunnel ports subscribed for this VNI
                 else:  # Outgoing traffic
-                    # Multi-cast on all subscriber VXLAN_ports and local ports except the in_port
+                    # Multi-cast on all subscriber VXLAN_ports.
                     # print("output_ports = {0}".format(output_ports))
                     for port in vxlan_ports:
                         # Set tunnel ID and output on the ports
@@ -209,6 +222,7 @@ class VtepConfigurator(app_manager.RyuApp):
                         st = datapath.send_msg(out)
                         print ("{0} Packet output {1} in_port={2} setTunnelId={3} out_port={4}".format(dpid, st, in_port, vni, port))
 
+            # Again it Shouldn't be required
             ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
             if ipv4_pkt is not None:
 
@@ -236,6 +250,7 @@ class VtepConfigurator(app_manager.RyuApp):
                 vxlan_ports = switch.vni_OFport[vni][:]
                 if in_port in vxlan_ports: # Incoming traffic
                     # Add reverse rule for uni-cast packet.
+                    # Will be used while sending a reply
                     match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.src)
                     self.mac_vni_to_hostip[(eth.src, vni)] = switch.host_ip
                     actions = [parser.OFPActionOutput(port=in_port)]
@@ -246,7 +261,7 @@ class VtepConfigurator(app_manager.RyuApp):
                     print ("{4} Rule added {0} table=1, priority=100, match(tunnel_id={1}, eth_dst={2}, out_port={3}".format(
                         st, vni, eth.src, in_port, dpid, ))
 
-                    # Set tunnel ID and Flood.
+                    # Set tunnel ID and Flood. Since, VLAN is ahead, it will take care of traffic segregation
                     vlan_id = switch.mapping[vni][0]
                     actions = [OFPActionPushVlan(ether_types.ETH_TYPE_8021Q),
                                OFPActionSetField(vlan_vid=(0x1000 | vlan_id)),
