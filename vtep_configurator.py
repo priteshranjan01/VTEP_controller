@@ -87,8 +87,6 @@ class VtepConfigurator(app_manager.RyuApp):
         self.switches = {}
         # self.mac_vni_to_hostip = {}  # (mac, vni) -> hostIP
         self._read_config(file_name="CONFIG.json")
-        pdb.set_trace()
-        print("Happy?")
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def _connection_up_handler(self, ev):
@@ -229,7 +227,10 @@ class VtepConfigurator(app_manager.RyuApp):
 
             else:  # Unicast message
                 if in_port in vxlan_ports:  # Incoming unicast message
-                    out_port = switch.mac_vni_to_port[(eth.dst, vni)]
+                    try:
+                        out_port = switch.mac_vni_to_port[(eth.dst, vni)]
+                    except KeyError as e:
+                        print(e)
                     # Add a rule for packets from VXLAN_port to local_port
                     match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.dst)
                     actions = [parser.OFPActionOutput(port=out_port)]
@@ -261,7 +262,10 @@ class VtepConfigurator(app_manager.RyuApp):
                         dpid_hex, st, vni, out_port))
 
                 else:  # Outgoing unicast message
-                    out_port = switch.mac_vni_to_port[(eth.dst, vni)]
+                    try:
+                        out_port = switch.mac_vni_to_port[(eth.dst, vni)]
+                    except KeyError as e:
+                        print(e)
                     # Add rule for packets from local_ports to VXLAN_ports
                     match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.dst)
                     actions = [parser.OFPActionOutput(port=out_port)]
@@ -327,8 +331,7 @@ class VtepConfigurator(app_manager.RyuApp):
                     try:
                         out_port = switch.mac_vni_to_port[(eth.dst, vni)]
                     except KeyError as e:
-                        pdb.set_trace()
-                        print (e)
+                        print(e)
                     # Add rule for forwarding from trunk_ports to VXLAN_ports
                     match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.src)
                     actions = [parser.OFPActionOutput(port=in_port)]
@@ -361,7 +364,10 @@ class VtepConfigurator(app_manager.RyuApp):
                         dpid_hex, st, vlan_id, out_port))
 
                 else:  # outgoing traffic
-                    out_port = switch.mac_vni_to_port[(eth.dst, vni)]
+                    try:
+                        out_port = switch.mac_vni_to_port[(eth.dst, vni)]
+                    except KeyError as e:
+                        print(e)
                     # Add a unicast rule for traffic forward from trunk_port to
                     # vxlan_port
                     match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.dst)
