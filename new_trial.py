@@ -144,7 +144,6 @@ class VtepConfigurator(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
-        # TODO: Keep timeouts for flow-mods that are in PACKET_IN handler
         msg = ev.msg
         datapath = msg.datapath
         dpid = datapath.id
@@ -222,10 +221,8 @@ class VtepConfigurator(app_manager.RyuApp):
                         st = datapath.send_msg(out)
                         print ("{0} Packet output {1} in_port={2} setTunnelId={3} out_port={4}".format(dpid, st, in_port, vni, port))
 
-            # Again it Shouldn't be required
             ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
             if ipv4_pkt is not None:
-
                 try:
                     remote_ip = self.mac_vni_to_hostip[(eth.dst, vni)]
                 except KeyError:
