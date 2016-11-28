@@ -231,6 +231,7 @@ class VtepConfigurator(app_manager.RyuApp):
                         out_port = switch.mac_vni_to_port[(eth.dst, vni)]
                     except KeyError as e:
                         print(e)
+                        return
                     # Add a rule for packets from VXLAN_port to local_port
                     match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.dst)
                     actions = [parser.OFPActionOutput(port=out_port)]
@@ -266,6 +267,7 @@ class VtepConfigurator(app_manager.RyuApp):
                         out_port = switch.mac_vni_to_port[(eth.dst, vni)]
                     except KeyError as e:
                         print(e)
+                        return
                     # Add rule for packets from local_ports to VXLAN_ports
                     match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.dst)
                     actions = [parser.OFPActionOutput(port=out_port)]
@@ -332,6 +334,7 @@ class VtepConfigurator(app_manager.RyuApp):
                         out_port = switch.mac_vni_to_port[(eth.dst, vni)]
                     except KeyError as e:
                         print(e)
+                        return
                     # Add rule for forwarding from trunk_ports to VXLAN_ports
                     match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.src)
                     actions = [parser.OFPActionOutput(port=in_port)]
@@ -345,6 +348,7 @@ class VtepConfigurator(app_manager.RyuApp):
                             dpid_hex, st, vni, eth.src, in_port))
 
                     # Add rule for forwarding from VXLAN_ports to trunk_ports
+                    
                     match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.dst)
                     actions = [OFPActionPushVlan(ether_types.ETH_TYPE_8021Q), OFPActionSetField(vlan_vid=(0x1000 | vlan_id)),
                                parser.OFPActionOutput(port=out_port)]
@@ -368,6 +372,7 @@ class VtepConfigurator(app_manager.RyuApp):
                         out_port = switch.mac_vni_to_port[(eth.dst, vni)]
                     except KeyError as e:
                         print(e)
+                        return
                     # Add a unicast rule for traffic forward from trunk_port to
                     # vxlan_port
                     match = parser.OFPMatch(tunnel_id=vni, eth_dst=eth.dst)
